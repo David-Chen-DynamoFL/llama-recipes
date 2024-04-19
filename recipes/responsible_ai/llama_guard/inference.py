@@ -111,7 +111,7 @@ class Entity():
     prompt_template = PROMPT_TEMPLATE_2
     with_policy = True
 
-def get_metrics(preds, gts):
+def get_metrics(preds, gts, policy_name):
     # Calculate precision, recall, f1
     tp = 0
     fp = 0
@@ -185,45 +185,46 @@ def main(
     POLICY = 'legal'
     print(f"|- Running on {POLICY} policy")
     prompts, labels = get_prompt_and_label(policies[POLICY]['dataset_id'])
-    # print(prompts)
-    entities = []
+
     preds = []
     gts = []
-    for prompt in prompts:
+
+    quantization_config = BitsAndBytesConfig(load_in_8bit=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForCausalLM.from_pretrained(model_id, quantization_config=quantization_config, device_map="auto")
+    
+    for i, prompt in enumerate(prompts):
         conversation = create_conversation([prompt])
-        
-        local = deepcopy(Entity)
-        local.prompt = conversation
-        local.policy = SafetyCategory(
+        converted_policy = SafetyCategory(
             policies[POLICY]['policy_name'],
             policies[POLICY]['policy_defn']
         )
-        entities.append(local)
-
-    quantization_config = BitsAndBytesConfig(load_in_8bit=True)
-
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    model = AutoModelForCausalLM.from_pretrained(model_id, quantization_config=quantization_config, device_map="auto")
-    for i, entity in enumerate(entities):
         formatted_prompt = build_custom_prompt(
-            agent_type=entity.agent,
-            conversations=entity.prompt,
-            categories=[entity.policy],
-            category_short_name_prefix=entity.category_short_name_prefix,
-            prompt_template=entity.prompt_template,
-            with_policy=entity.with_policy
+            agent_type=Entity.agent,
+            conversations=conversation,
+            categories=[converted_policy],
+            category_short_name_prefix=Entity.category_short_name_prefix,
+            prompt_template=Entity.prompt_template,
+            with_policy=Entity.with_policy
         )
 
         input = tokenizer([formatted_prompt], return_tensors="pt").to("cuda")
         prompt_len = input["input_ids"].shape[-1]
         output = model.generate(**input, max_new_tokens=100, pad_token_id=0)
-        results = tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True)
-       
+        raw_results = tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True)
+
+        if 'unsafe' in raw_results:
+            results = 'unsafe'
+        else:
+            results = 'safe'
+        
         preds.append(results)
         gts.append(labels[i])
 
-        print(f"|- Input prompt: {entity.prompt[0]}")
+        print(f"|- Input prompt: {entity.prompt}")
+        print(f"|- Raw Result: {raw_results}")
         print(f"|- Result: {results}")
+        print(f"|- Ground Truth: {labels[i]}")
         print("\n==================================\n")
 
     get_metrics(preds, gts)
