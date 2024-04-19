@@ -111,6 +111,49 @@ class Entity():
     prompt_template = PROMPT_TEMPLATE_2
     with_policy = True
 
+def get_metrics(preds, gts):
+    # Calculate precision, recall, f1
+    tp = 0
+    fp = 0
+    fn = 0
+    tn = 0
+    acc_cnt = 0
+    cnt = 0
+    unsafe_cnt = 0
+    for pred, gt in zip(preds, gts):
+        if gt == 'unsafe':
+            if pred == 'unsafe':
+                tp += 1
+                acc_cnt+=1
+                unsafe_cnt+=1
+            else:
+                fn += 1
+        else:
+            if pred == 'unsafe':
+                fp += 1
+                unsafe_cnt+=1
+            else:
+                tn += 1
+                acc_cnt+=1
+        cnt += 1
+    try:
+        precision = tp / (tp + fp)
+    except ZeroDivisionError:
+        precision = 0
+    try:
+        recall = tp / (tp + fn)
+    except ZeroDivisionError:
+        recall = 0
+    try:
+        f1 = 2 * precision * recall / (precision + recall)
+    except ZeroDivisionError:
+        f1 = 0
+    accuracy = acc_cnt / cnt
+    print(f"Precision: {round(precision, 3)}")
+    print(f"Recall: {round(recall, 3)}")
+    print(f"F1: {round(f1, 3)}")
+    print(f"Accuracy: {round(accuracy, 3)}")
+
 def get_prompt_and_label(dataset_id="dynamofl/benchmark-default-toxicity"):
     dataset = load_dataset(dataset_id)['train']
 
@@ -144,6 +187,8 @@ def main(
     prompts, labels = get_prompt_and_label(policies[POLICY]['dataset_id'])
     # print(prompts)
     entities = []
+    preds = []
+    gts = []
     for prompt in prompts:
         conversation = create_conversation([prompt])
         
@@ -159,7 +204,7 @@ def main(
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(model_id, quantization_config=quantization_config, device_map="auto")
-    for entity in entities:
+    for i, entity in enumerate(entities):
         formatted_prompt = build_custom_prompt(
             agent_type=entity.agent,
             conversations=entity.prompt,
@@ -174,13 +219,14 @@ def main(
         output = model.generate(**input, max_new_tokens=100, pad_token_id=0)
         results = tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True)
        
-        
+        preds.append(results)
+        gts.append(labels[i])
+
         print(f"|- Input prompt: {entity.prompt[0]}")
         print(f"|- Result: {results}")
         print("\n==================================\n")
 
+    get_metrics(preds, gts)
+
 if __name__ == "__main__":
-    try:
-        fire.Fire(main)
-    except Exception as e:
-        print(e)
+    fire.Fire(main)
