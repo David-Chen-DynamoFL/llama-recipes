@@ -11,6 +11,9 @@ from transformers import AutoTokenizer
 from llama_recipes.inference.prompt_format_utils import build_default_prompt, create_conversation, LlamaGuardVersion, build_custom_prompt, PROMPT_TEMPLATE_2, LLAMA_GUARD_2_CATEGORY_SHORT_NAME_PREFIX, SafetyCategory
 from typing import List, Tuple
 from enum import Enum
+
+TESTING=True
+
 policies = {
     'legal':{
         'dataset_id': 'dynamofl/benchmark-default-legal-advice-input',
@@ -154,6 +157,12 @@ def get_metrics(preds, gts, policy_name):
     print(f"F1: {round(f1, 3)}")
     print(f"Accuracy: {round(accuracy, 3)}")
 
+    with open(f"{policy_name}_metrics.txt", "w") as f:
+        f.write(f"Precision: {round(precision, 3)}\n")
+        f.write(f"Recall: {round(recall, 3)}\n")
+        f.write(f"F1: {round(f1, 3)}\n")
+        f.write(f"Accuracy: {round(accuracy, 3)}\n")
+
 def get_prompt_and_label(dataset_id="dynamofl/benchmark-default-toxicity"):
     dataset = load_dataset(dataset_id)['train']
 
@@ -163,6 +172,7 @@ def get_prompt_and_label(dataset_id="dynamofl/benchmark-default-toxicity"):
     return prompts, labels
 
 def main(
+        policy:str,
     model_id: str = "meta-llama/Meta-Llama-Guard-2-8B",
     llama_guard_version: LlamaGuardVersion = "LLAMA_GUARD_2"
 ):
@@ -182,7 +192,7 @@ def main(
     except KeyError as e:
         raise ValueError(f"Invalid Llama Guard version '{llama_guard_version}'. Valid values are: {', '.join([lgv.name for lgv in LlamaGuardVersion])}") from e
         
-    POLICY = 'legal'
+    POLICY = policy
     print(f"|- Running on {POLICY} policy")
     prompts, labels = get_prompt_and_label(policies[POLICY]['dataset_id'])
 
@@ -192,7 +202,7 @@ def main(
     quantization_config = BitsAndBytesConfig(load_in_8bit=True)
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(model_id, quantization_config=quantization_config, device_map="auto")
-    
+
     for i, prompt in enumerate(prompts):
         conversation = create_conversation([prompt])
         converted_policy = SafetyCategory(
@@ -221,13 +231,19 @@ def main(
         preds.append(results)
         gts.append(labels[i])
 
-        print(f"|- Input prompt: {entity.prompt}")
+        print(f"|- Input prompt: {conversation}")
         print(f"|- Raw Result: {raw_results}")
         print(f"|- Result: {results}")
         print(f"|- Ground Truth: {labels[i]}")
         print("\n==================================\n")
 
-    get_metrics(preds, gts)
+        if TESTING:
+            if i == 10:
+                break
+
+    get_metrics(preds, gts, policies[POLICY]['policy_name'])
 
 if __name__ == "__main__":
-    fire.Fire(main)
+    for k in policies:
+        print(f"Running on {k}")
+        fire.Fire(main(k))
