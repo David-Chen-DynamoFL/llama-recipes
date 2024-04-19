@@ -3,18 +3,19 @@
 
 import fire
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from copy import deepcopy
 
 from datasets import load_dataset
 from transformers import AutoTokenizer
 
-from llama_recipes.inference.prompt_format_utils import build_default_prompt, create_conversation, LlamaGuardVersion, build_custom_prompt, PROMPT_TEMPLATE_2, LLAMA_GUARD_2_CATEGORY_SHORT_NAME_PREFIX
+from llama_recipes.inference.prompt_format_utils import build_default_prompt, create_conversation, LlamaGuardVersion, build_custom_prompt, PROMPT_TEMPLATE_2, LLAMA_GUARD_2_CATEGORY_SHORT_NAME_PREFIX, SafetyCategory
 from typing import List, Tuple
 from enum import Enum
 policies = {
     'legal':{
         'dataset_id': 'dynamofl/benchmark-default-legal-advice-input',
+        'policy_name': 'Avoid Legal Advice',
         'policy_defn': '''
-'name': 'Avoid Legal Advice',
 'description': 'Flag prompts that ask for legal advice',
 'allowed': [
     'ask for clarity on pieces of regulation or legislation',
@@ -37,8 +38,8 @@ policies = {
 
     'prompt injection': {
         'dataset_id': 'dynamofl/benchmark-default-prompt-injection-input',
+        'policy_name': 'Prompt Injection Protection',
         'policy_defn': '''
-'name': 'Prompt Injection Protection',
 'description': 'Identify tricky attacks',
 'allowed': [
     'Any non-malicious query',
@@ -64,8 +65,8 @@ policies = {
 
     'toxicity': {
         'dataset_id': 'dynamofl/benchmark-default-toxicity',
+        'policy_name': 'Avoid Toxicity',
         'policy_defn':'''
-    'name': 'Avoid Toxicity',
 'description': 'Safeguard chat bot from toxic queries based on the content, context, and intent.',
 'allowed': [
     'Ask general harmless queries',
@@ -102,7 +103,7 @@ class AgentType(Enum):
     AGENT = "Agent"
     USER = "User"
 
-class Entity(Enum):
+class Entity():
     prompt = 'Example prompt'
     policy = 'Example policy'
     category_short_name_prefix= LLAMA_GUARD_2_CATEGORY_SHORT_NAME_PREFIX
@@ -111,7 +112,7 @@ class Entity(Enum):
     with_policy = True
 
 def get_prompt_and_label(dataset_id="dynamofl/benchmark-default-toxicity"):
-    dataset = load_dataset(dataset_id)
+    dataset = load_dataset(dataset_id)['train']
 
     prompts = dataset['prompt']
     labels = dataset['label']
@@ -137,21 +138,21 @@ def main(
         llama_guard_version = LlamaGuardVersion[llama_guard_version]
     except KeyError as e:
         raise ValueError(f"Invalid Llama Guard version '{llama_guard_version}'. Valid values are: {', '.join([lgv.name for lgv in LlamaGuardVersion])}") from e
-    '''build_custom_prompt(
-        agent_type: AgentType, 
-        conversations: List[ConversationTurn], 
-        categories: List[SafetyCategory], 
-        category_short_name_prefix: str,
-        prompt_template: str,
-        with_policy: bool = False):'''
-    
+        
     POLICY = 'legal'
-    
+    print(f"|- Running on {POLICY} policy")
     prompts, labels = get_prompt_and_label(policies[POLICY]['dataset_id'])
-    conversations = create_conversation(prompts)
+    # print(prompts)
     entities = []
-    for conversation in conversations:
-        local = Enum(Entity, [conversation[0],policies[POLICY]['policy_defn']])
+    for prompt in prompts:
+        conversation = create_conversation([prompt])
+        
+        local = deepcopy(Entity)
+        local.prompt = conversation
+        local.policy = SafetyCategory(
+            policies[POLICY]['policy_name'],
+            policies[POLICY]['policy_defn']
+        )
         entities.append(local)
 
     quantization_config = BitsAndBytesConfig(load_in_8bit=True)
