@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # This software may be used and distributed according to the terms of the Llama 2 Community License Agreement.
 
-import fire
+import fire, csv
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from copy import deepcopy
 
@@ -202,44 +202,49 @@ def main(
     quantization_config = BitsAndBytesConfig(load_in_8bit=True)
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(model_id, quantization_config=quantization_config, device_map="auto")
-
-    for i, prompt in enumerate(prompts):
-        conversation = create_conversation([prompt])
-        converted_policy = SafetyCategory(
-            policies[POLICY]['policy_name'],
-            policies[POLICY]['policy_defn']
-        )
-        formatted_prompt = build_custom_prompt(
-            agent_type=Entity.agent,
-            conversations=conversation,
-            categories=[converted_policy],
-            category_short_name_prefix=Entity.category_short_name_prefix,
-            prompt_template=Entity.prompt_template,
-            with_policy=Entity.with_policy
-        )
-
-        input = tokenizer([formatted_prompt], return_tensors="pt").to("cuda")
-        prompt_len = input["input_ids"].shape[-1]
-        output = model.generate(**input, max_new_tokens=100, pad_token_id=0)
-        raw_results = tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True)
-
-        if 'unsafe' in raw_results:
-            results = 'unsafe'
-        else:
-            results = 'safe'
+    with open(f"{policies[POLICY]['policy_name']}_log.csv", "w", newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(["Input", "Result", "Ground Truth", "|-> Backup Logs", "Conversation", "Raw Results"])
         
-        preds.append(results)
-        gts.append(labels[i])
+        for i, prompt in enumerate(prompts):
+            conversation = create_conversation([prompt])
+            converted_policy = SafetyCategory(
+                policies[POLICY]['policy_name'],
+                policies[POLICY]['policy_defn']
+            )
+            formatted_prompt = build_custom_prompt(
+                agent_type=Entity.agent,
+                conversations=conversation,
+                categories=[converted_policy],
+                category_short_name_prefix=Entity.category_short_name_prefix,
+                prompt_template=Entity.prompt_template,
+                with_policy=Entity.with_policy
+            )
 
-        print(f"|- Input prompt: {conversation}")
-        print(f"|- Raw Result: {raw_results}")
-        print(f"|- Result: {results}")
-        print(f"|- Ground Truth: {labels[i]}")
-        print("\n==================================\n")
+            input = tokenizer([formatted_prompt], return_tensors="pt").to("cuda")
+            prompt_len = input["input_ids"].shape[-1]
+            output = model.generate(**input, max_new_tokens=100, pad_token_id=0)
+            raw_results = tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True)
 
-        if TESTING:
-            if i == 10:
-                break
+            if 'unsafe' in raw_results:
+                results = 'unsafe'
+            else:
+                results = 'safe'
+            
+            preds.append(results)
+            gts.append(labels[i])
+
+            writer.writerow([prompt, results, labels[i], '----', conversation, raw_results])
+
+            print(f"|- Input prompt: {conversation}")
+            print(f"|- Raw Result: {raw_results}")
+            print(f"|- Result: {results}")
+            print(f"|- Ground Truth: {labels[i]}")
+            print("\n==================================\n")
+
+            if TESTING:
+                if i == 10:
+                    break
 
     get_metrics(preds, gts, policies[POLICY]['policy_name'])
 
