@@ -1,18 +1,19 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # This software may be used and distributed according to the terms of the Llama 2 Community License Agreement.
 
-import fire, csv
+import fire, csv, os
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from copy import deepcopy
 
 from datasets import load_dataset
 from transformers import AutoTokenizer
-
+from time import time
 from llama_recipes.inference.prompt_format_utils import build_default_prompt, create_conversation, LlamaGuardVersion, build_custom_prompt, PROMPT_TEMPLATE_2, LLAMA_GUARD_2_CATEGORY_SHORT_NAME_PREFIX, SafetyCategory
 from typing import List, Tuple
 from enum import Enum
 
-TESTING=True
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+TESTING=False
 
 policies = {
     'legal':{
@@ -157,11 +158,12 @@ def get_metrics(preds, gts, policy_name):
     print(f"F1: {round(f1, 3)}")
     print(f"Accuracy: {round(accuracy, 3)}")
 
-    with open(f"{policy_name}_metrics.txt", "w") as f:
-        f.write(f"Precision: {round(precision, 3)}\n")
-        f.write(f"Recall: {round(recall, 3)}\n")
-        f.write(f"F1: {round(f1, 3)}\n")
-        f.write(f"Accuracy: {round(accuracy, 3)}\n")
+    # with open(f"{policy_name}_metrics.txt", "w") as f:
+    #     f.write(f"Precision: {round(precision, 3)}\n")
+    #     f.write(f"Recall: {round(recall, 3)}\n")
+    #     f.write(f"F1: {round(f1, 3)}\n")
+    #     f.write(f"Accuracy: {round(accuracy, 3)}\n")
+    return round(precision, 3), round(recall, 3), round(f1, 3), round(accuracy, 3)
 
 def get_prompt_and_label(dataset_id="dynamofl/benchmark-default-toxicity"):
     dataset = load_dataset(dataset_id)['train']
@@ -193,20 +195,23 @@ def main(
         raise ValueError(f"Invalid Llama Guard version '{llama_guard_version}'. Valid values are: {', '.join([lgv.name for lgv in LlamaGuardVersion])}") from e
         
     POLICY = policy
-    print(f"|- Running on {POLICY} policy")
+    if TESTING:
+        print("** TESTING MODE**")
     prompts, labels = get_prompt_and_label(policies[POLICY]['dataset_id'])
 
     preds = []
     gts = []
+    latencies = []
 
     quantization_config = BitsAndBytesConfig(load_in_8bit=True)
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(model_id, quantization_config=quantization_config, device_map="auto")
     with open(f"{policies[POLICY]['policy_name']}_log.csv", "w", newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(["Input", "Result", "Ground Truth", "|-> Backup Logs", "Conversation", "Raw Results"])
+        writer.writerow(["Input", "Result", "Ground Truth", "Latency", "|-> Backup Logs", "Conversation", "Raw Results"])
         
         for i, prompt in enumerate(prompts):
+            start = time()
             conversation = create_conversation([prompt])
             converted_policy = SafetyCategory(
                 policies[POLICY]['policy_name'],
@@ -233,8 +238,13 @@ def main(
             
             preds.append(results)
             gts.append(labels[i])
+            end = time()
 
-            writer.writerow([prompt, results, labels[i], '----', conversation, raw_results])
+            latency = round((end - start), 3)
+            
+            writer.writerow([prompt, results, labels[i], latency, '----', conversation, raw_results])
+
+            latencies.append(latency)
 
             print(f"|- Input prompt: {conversation}")
             print(f"|- Raw Result: {raw_results}")
@@ -245,10 +255,17 @@ def main(
             if TESTING:
                 if i == 10:
                     break
-
-    get_metrics(preds, gts, policies[POLICY]['policy_name'])
+        avg_latency = round(sum(latencies) / len(latencies),3)
+        precision, recall, f1, accuracy = get_metrics(preds, gts, policies[POLICY]['policy_name'])
+        writer.writerow(["","","","","","",""])
+        writer.writerow(["","","","","","Precision", precision])
+        writer.writerow(["","","","","","Recall", recall])
+        writer.writerow(["","","","","","F1", f1])
+        writer.writerow(["","","","","","Accuracy", accuracy])
+        writer.writerow(["","","","","","Avg Latency", avg_latency])
 
 if __name__ == "__main__":
-    for k in policies:
-        print(f"Running on {k}")
-        fire.Fire(main(k))
+    assert os.environ["POLICY"] in policies, "Policy key is incorrect"
+    p = os.environ["POLICY"]
+    print(f"|- Running on {p}")
+    fire.Fire(main(p))
